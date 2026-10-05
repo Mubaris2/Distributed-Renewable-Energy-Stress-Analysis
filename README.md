@@ -2,11 +2,13 @@
 
 ## WorkFlow
 
-Git clone the repository and run the following steps in order:
+- Git clone the repository and run the following steps in order:
+- Start your Hadoop Cluster and Hive Server. Confirm that you can run `hdfs dfs -ls /` and `hive -e "show databases;"` without errors.
 
 #### 1. Fetch raw data from ENTSO-E Transparency Platform (XML) and convert to CSV.
 ```bash
 cd Distributed-Renewable-Energy-Stress-Analysis
+# Start a virtual environment (optional but recommended)
 pip install -r scripts/requirements.txt
 python scripts/fetch_entsoe.py --country NL --months 3
 python scripts/fetch_weather.py --country NL --energy-csv data/processed/entsoe_NL_2026-07-06_2026-10-04.csv
@@ -14,39 +16,47 @@ python scripts/fetch_weather.py --country NL --energy-csv data/processed/entsoe_
 
 #### 2. Clean and integrate the data using Pig.
 
-- Start your Hadoop cluster and confirm hadoop is running.
 - Create HDFS directory structure
 
 ```bash
-hdfs dfs -mkdir -p /user/$USER/energy/raw
-hdfs dfs -mkdir -p /user/$USER/energy/processed
+hdfs dfs -mkdir -p /big_data/distributed_energy/raw
+hdfs dfs -mkdir -p /big_data/distributed_energy/processed
 ```
 
 - Upload the merged energy+weather CSV to HDFS
  
 ```bash
-hdfs dfs -put data/processed/entsoe_weather_NL_2026-07-06_2026-10-04.csv /user/$USER/energy/raw/entsoe_weather_NL.csv
+hdfs dfs -put data/processed/entsoe_weather_NL_2026-07-06_2026-10-04.csv /big_data/distributed_energy/raw/entsoe_weather_NL.csv
 ```
 
 - Run the Pig ETL script
 
 ```bash
-pig -x mapreduce -param USER=$USER pig/clean_integrate.pig
+pig -x mapreduce pig/clean_integrate.pig
 ```
 
 - Verify output
 
 ```bash
-hdfs dfs -ls /user/$USER/energy/processed/nl_clean_integrated
-hdfs dfs -cat /user/$USER/energy/processed/nl_clean_integrated/part-* | head -5
+hdfs dfs -ls /big_data/distributed_energy/processed/nl_clean_integrated
+hdfs dfs -cat /big_data/distributed_energy/processed/nl_clean_integrated/part-* | head -5
 
-hdfs dfs -ls /user/$USER/energy/processed/nl_flagged_solar_gaps
-hdfs dfs -cat /user/$USER/energy/processed/nl_flagged_solar_gaps/part-* | wc -l
+hdfs dfs -ls /big_data/distributed_energy/processed/nl_flagged_solar_gaps
+hdfs dfs -cat /big_data/distributed_energy/processed/nl_flagged_solar_gaps/part-* | wc -l
 ```
 
 #### 3. Analyze the data using Hive.
 
-Yet to be implemented.
+```bash
+hive -f hive/schema.sql
+hive -f hive/analytical_queries.sql
+```
+
+Verify
+
+```bash
+hdfs dfs -ls /big_data/distributed_energy/processed/
+```
 
 #### 4. Perform machine learning on the data using Spark.
 

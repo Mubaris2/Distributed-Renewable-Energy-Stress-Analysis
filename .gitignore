@@ -1,8 +1,15 @@
 .env
+
 data/raw/*
 data/processed/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
+
 __pycache__/
 *.pyc
 *.log
+
+metastore_db
+
+.venv
+venv
