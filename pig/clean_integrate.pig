@@ -1,7 +1,8 @@
--- ===== 1. LOAD raw merged energy+weather CSV, skip header, cast types =====
-raw = LOAD '/user/$USER/energy/raw/entsoe_weather_NL.csv'
+-- ===== 1. LOAD raw merged energy+weather CSV(s), skip header, cast types =====
+raw = LOAD '$RAW_PATHS'
     USING PigStorage(',')
     AS (
+        country:chararray,
         timestamp:chararray,
         load_mw:chararray,
         solar_mw:chararray,
@@ -13,10 +14,11 @@ raw = LOAD '/user/$USER/energy/raw/entsoe_weather_NL.csv'
     );
 
 -- drop the header row 
-raw_no_header = FILTER raw BY timestamp != 'timestamp';
+raw_no_header = FILTER raw BY country != 'country';
 
 -- explicit type casting
 casted = FOREACH raw_no_header GENERATE
+    country AS country,
     timestamp AS timestamp,
     (load_mw == '' ? (double)null : (double)load_mw) AS load_mw:double,
     (solar_mw == '' ? (double)null : (double)solar_mw) AS solar_mw:double,
@@ -37,9 +39,9 @@ physically_valid = FILTER with_hour BY
     AND (wind_offshore_mw IS NULL OR wind_offshore_mw >= 0)
     AND (solar_mw IS NULL OR solar_mw >= 0);
 
--- ===== 4. Missing-value handling for solar (Section 12: "Missing-value handling") =====
+-- ===== 4. Missing-value handling for solar =====
 solar_handled = FOREACH physically_valid GENERATE
-    timestamp, load_mw,
+    country, timestamp, load_mw,
     ((solar_mw IS NULL AND (hour >= 22 OR hour < 5)) ? 0.0 : solar_mw) AS solar_mw,
     wind_onshore_mw, wind_offshore_mw,
     temperature_c, humidity_pct, wind_speed_ms, hour;
@@ -47,17 +49,17 @@ solar_handled = FOREACH physically_valid GENERATE
 clean_main = FILTER solar_handled BY solar_mw IS NOT NULL;
 flagged_daylight_gaps = FILTER solar_handled BY solar_mw IS NULL;
 
--- ===== 5. Deduplication safety net =====
-grouped_by_ts = GROUP clean_main BY timestamp;
+-- ===== 5. Deduplication, keyed on (country, timestamp) =====
+grouped_by_ts = GROUP clean_main BY (country, timestamp);
 deduped = FOREACH grouped_by_ts GENERATE
     FLATTEN(TOP(1, 0, clean_main)) AS (
-        timestamp, load_mw, solar_mw, wind_onshore_mw, wind_offshore_mw,
+        country, timestamp, load_mw, solar_mw, wind_onshore_mw, wind_offshore_mw,
         temperature_c, humidity_pct, wind_speed_ms, hour
     );
 
 -- ===== 6. Derived project-defined energy metrics =====
 with_metrics = FOREACH deduped GENERATE
-    timestamp, load_mw AS demand_mw, solar_mw, wind_onshore_mw, wind_offshore_mw,
+    country, timestamp, load_mw AS demand_mw, solar_mw, wind_onshore_mw, wind_offshore_mw,
     temperature_c, humidity_pct, wind_speed_ms, hour,
     (solar_mw + wind_onshore_mw + wind_offshore_mw) AS renewable_generation_mw,
     (load_mw - (solar_mw + wind_onshore_mw + wind_offshore_mw)) AS net_load_mw,
@@ -65,7 +67,7 @@ with_metrics = FOREACH deduped GENERATE
     (1.0 - ((solar_mw + wind_onshore_mw + wind_offshore_mw) / load_mw)) AS grid_stress_indicator;
 
 -- ===== 7. STORE cleaned + flagged outputs to HDFS, ready for Hive external tables =====
-STORE with_metrics INTO '/user/$USER/energy/processed/nl_clean_integrated'
+STORE with_metrics INTO '/big_data/distributed_energy/processed/clean_integrated'
     USING PigStorage(',');
-STORE flagged_daylight_gaps INTO '/user/$USER/energy/processed/nl_flagged_solar_gaps'
+STORE flagged_daylight_gaps INTO '/big_data/distributed_energy/processed/flagged_solar_gaps'
     USING PigStorage(',');

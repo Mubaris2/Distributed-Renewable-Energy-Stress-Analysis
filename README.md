@@ -2,20 +2,21 @@
 
 ## WorkFlow
 
-- Git clone the repository and run the following steps in order:
-- Start your Hadoop Cluster and Hive Server. Confirm that you can run `hdfs dfs -ls /` and `hive -e "show databases;"` without errors.
+Git clone the repository and run the following steps in order:
 
 #### 1. Fetch raw data from ENTSO-E Transparency Platform (XML) and convert to CSV.
 ```bash
 cd Distributed-Renewable-Energy-Stress-Analysis
 # Start a virtual environment (optional but recommended)
-pip install -r scripts/requirements.txt
-python scripts/fetch_entsoe.py --country NL --months 3
-python scripts/fetch_weather.py --country NL --energy-csv data/processed/entsoe_NL_2026-07-06_2026-10-04.csv
+pip install -r requirements.txt
+python scripts/fetch_entsoe.py --country NL --months 3 # Multiple country support with comma-separated list, e.g., "NL,DE,FR" 
+python scripts/fetch_weather.py --country NL 
 ```
 
 #### 2. Clean and integrate the data using Pig.
 
+- Start your Hadoop Cluster. Confirm that you can run `hdfs dfs -ls /` without any errors.
+- Use `jps` to confirm that NameNode, DataNode, ResourceManager, and NodeManager are running.
 - Create HDFS directory structure
 
 ```bash
@@ -32,24 +33,27 @@ hdfs dfs -put data/processed/entsoe_weather_NL_2026-07-06_2026-10-04.csv /big_da
 - Run the Pig ETL script
 
 ```bash
-pig -x mapreduce pig/clean_integrate.pig
+./scripts/run_pig_etl.sh --countries NL
 ```
 
 - Verify output
 
 ```bash
-hdfs dfs -ls /big_data/distributed_energy/processed/nl_clean_integrated
-hdfs dfs -cat /big_data/distributed_energy/processed/nl_clean_integrated/part-* | head -5
+hdfs dfs -ls /big_data/distributed_energy/processed/clean_integrated
+hdfs dfs -cat /big_data/distributed_energy/processed/clean_integrated/part-* | head -5
 
-hdfs dfs -ls /big_data/distributed_energy/processed/nl_flagged_solar_gaps
-hdfs dfs -cat /big_data/distributed_energy/processed/nl_flagged_solar_gaps/part-* | wc -l
+hdfs dfs -ls /big_data/distributed_energy/processed/flagged_solar_gaps
+hdfs dfs -cat /big_data/distributed_energy/processed/flagged_solar_gaps/part-* | wc -l
 ```
 
 #### 3. Analyze the data using Hive.
 
+- Start Hive server2 and connect to it using Beeline or Hive CLI.
+- Inside `hive` shell, run the following commands to create the schema and run analytical queries:
+
 ```bash
-hive -f hive/schema.sql
-hive -f hive/analytical_queries.sql
+SOURCE hive/schema.sql;
+SOURCE hive/analytical_queries.sql;
 ```
 
 Verify
@@ -60,7 +64,13 @@ hdfs dfs -ls /big_data/distributed_energy/processed/
 
 #### 4. Perform machine learning on the data using Spark.
 
-Yet to be implemented.
+- Install and ensure the working of spark-submit and pyspark.
+- Run the Spark MLlib code to train and compare models:
+
+```bash
+spark-submit spark/train_and_compare.py --target net_load_mw --models all --test-frac 0.2
+spark-submit spark/train_and_compare.py --target demand_mw --models linear,rf --test-frac 0.2
+```
 
 ## Project structure
 

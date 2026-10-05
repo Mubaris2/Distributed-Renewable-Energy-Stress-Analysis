@@ -147,30 +147,27 @@ def fetch_series(params_base, column_name, start, end, token, label, save_raw_pr
     return combined
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--country", default="NL", choices=DOMAIN_CODES.keys())
-    parser.add_argument("--months", type=int, default=3)
-    args = parser.parse_args()
-
-    RAW_DIR.mkdir(parents=True, exist_ok=True)
-    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-
-    token = get_token()
-    domain_code = DOMAIN_CODES[args.country]
+def fetch_one_country(country, months, token):
+    """Fetch and save load+solar+wind for a single country. The time window
+    (months) and the 15-min expected-row-count check are computed fresh here
+    each call, so they scale correctly no matter how many countries are
+    requested in one run, nothing about the per-country logic is hardcoded
+    to a single run."""
+    domain_code = DOMAIN_CODES[country]
     end = datetime.now(timezone.utc).replace(tzinfo=None)
-    start = end - timedelta(days=30 * args.months)
+    start = end - timedelta(days=30 * months)
 
-    print(f"Fetching {args.country} load, {start.date()} to {end.date()}...")
+    print(f"\n=== {country} ===")
+    print(f"Fetching {country} load, {start.date()} to {end.date()}...")
     load_df = fetch_series(
         {"documentType": "A65", "processType": "A16", "outBiddingZone_Domain": domain_code},
-        "load_mw", start, end, token, "load", save_raw_prefix="load",
+        "load_mw", start, end, token, "load", save_raw_prefix=f"load_{country}",
     )
 
     print("Fetching solar generation...")
     solar_df = fetch_series(
         {"documentType": "A75", "processType": "A16", "in_Domain": domain_code, "psrType": PSR_TYPES["solar"]},
-        "solar_mw", start, end, token, "solar", save_raw_prefix="solar",
+        "solar_mw", start, end, token, "solar", save_raw_prefix=f"solar_{country}",
     )
 
     print("Fetching wind onshore generation...")
@@ -186,29 +183,59 @@ def main():
     )
 
     if load_df.empty:
-        print("\nLoad series came back empty. Check data/raw/load_sample.xml for the API's raw response"
-              " (likely an Acknowledgement_MarketDocument explaining why), then stop here before merging.")
-        return
+        print(f"\n[{country}] Load series came back empty. Check data/raw/load_{country}_sample.xml"
+              " for the API's raw response, skipping this country rather than saving a broken file.")
+        return None
 
     merged = load_df
     for df, name in [(solar_df, "solar"), (wind_on_df, "wind_onshore"), (wind_off_df, "wind_offshore")]:
         if df.empty:
-            print(f"    [warning] {name} series is empty, skipping from merge.")
+            print(f"    [warning] {name} series is empty for {country}, skipping from merge.")
             continue
         merged = merged.merge(df, on="timestamp", how="outer")
     merged = merged.sort_values("timestamp").reset_index(drop=True)
+    merged.insert(0, "country", country)
 
-    out_path = PROCESSED_DIR / f"entsoe_{args.country}_{start.date()}_{end.date()}.csv"
+    out_path = PROCESSED_DIR / f"entsoe_{country}_{start.date()}_{end.date()}.csv"
     merged.to_csv(out_path, index=False)
-    print(f"\nSaved {len(merged)} rows to {out_path}")
+    print(f"Saved {len(merged)} rows to {out_path}")
 
-    print("\n--- Data quality summary ---")
+    print(f"--- {country} data quality summary ---")
     print(f"Rows: {len(merged)}")
     print(f"Date range: {merged['timestamp'].min()} to {merged['timestamp'].max()}")
     print("Missing values per column:")
     print(merged.isna().sum())
     expected_rows = int((end - start).total_seconds() / 900)  # 15-min resolution assumption
     print(f"Expected rows at 15-min resolution: ~{expected_rows}, got {len(merged)}")
+    return out_path
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--country", default="NL",
+                         help="Comma-separated country codes, e.g. NL or NL,BE,FR. "
+                              f"Valid codes: {', '.join(DOMAIN_CODES.keys())}")
+    parser.add_argument("--months", type=int, default=3)
+    args = parser.parse_args()
+
+    countries = [c.strip() for c in args.country.split(",") if c.strip()]
+    invalid = [c for c in countries if c not in DOMAIN_CODES]
+    if invalid:
+        raise SystemExit(f"Unknown country code(s): {invalid}. Valid codes: {list(DOMAIN_CODES.keys())}")
+
+    RAW_DIR.mkdir(parents=True, exist_ok=True)
+    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+
+    token = get_token()
+
+    results = {}
+    for country in countries:
+        results[country] = fetch_one_country(country, args.months, token)
+
+    print("\n=== Summary across all requested countries ===")
+    for country, path in results.items():
+        status = f"saved to {path}" if path else "FAILED, see warnings above"
+        print(f"  {country}: {status}")
 
 
 if __name__ == "__main__":
