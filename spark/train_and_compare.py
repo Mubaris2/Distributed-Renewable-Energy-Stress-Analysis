@@ -1,273 +1,314 @@
+#!/usr/bin/env python3
+"""Terminal-only Spark ML comparison for electricity net-load forecasting.
+
+Reads energy_db.readings from Hive. Does not write CSV files or prediction
+results to Hive. Example:
+spark-submit --driver-memory 3g --conf spark.driver.maxResultSize=512m \
+  --conf spark.sql.shuffle.partitions=8 spark/train_and_compare.py \
+  --target net_load_mw --models all --test-frac 0.2 --skip-cv
 """
-Phase 4: Spark MLlib model training and comparison.
-
-Reads the cleaned/integrated energy data, engineers forecasting features,
-trains multiple candidate models with cross-validated hyperparameter search,
-evaluates each on a chronological (per-country) held-out test set, and writes
-a comparison table plus the best model's predictions.
-
-Usage (spark-submit):
-    spark-submit train_and_compare.py --target net_load_mw --models all --test-frac 0.2
-    spark-submit train_and_compare.py --target demand_mw --models linear,rf --test-frac 0.2
-
-See docs/phase4_spark_mllib_plan.md for the full design rationale,
-particularly around why the train/test split must be chronological and why
-lag features are partitioned by country.
-"""
-
 import argparse
 import time
-from pathlib import Path
 
+from pyspark import StorageLevel
 from pyspark.sql import SparkSession, Window
 from pyspark.sql import functions as F
-from pyspark.ml.feature import VectorAssembler, StringIndexer, OneHotEncoder
-from pyspark.ml.regression import LinearRegression, DecisionTreeRegressor, RandomForestRegressor, GBTRegressor
+from pyspark.sql.types import NumericType
+from pyspark.ml import Pipeline
+from pyspark.ml.feature import StringIndexer, OneHotEncoder, VectorAssembler
+from pyspark.ml.regression import (
+    LinearRegression, DecisionTreeRegressor,
+    RandomForestRegressor, GBTRegressor,
+)
 from pyspark.ml.tuning import CrossValidator, ParamGridBuilder
 from pyspark.ml.evaluation import RegressionEvaluator
-from pyspark.ml import Pipeline
 
-MODEL_REGISTRY = {
+DATABASE = "energy_db"
+SOURCE_TABLE = "readings"
+MODEL_NAMES = {
     "linear": "Linear Regression",
     "dt": "Decision Tree",
     "rf": "Random Forest",
     "gbt": "Gradient-Boosted Trees",
 }
 
-LAG_STEPS = {
-    "previous_hour_demand": 4,     # 4 * 15min = 1 hour
-    "previous_day_demand": 96,     # 96 * 15min = 1 day
-    "previous_week_demand": 672,   # 672 * 15min = 1 week
-}
+
+def parse_args():
+    p = argparse.ArgumentParser(description="Compare Spark forecasting regressors.")
+    p.add_argument("--target", default="net_load_mw")
+    p.add_argument("--models", default="all",
+                   help="all or comma-separated: linear,dt,rf,gbt")
+    p.add_argument("--test-frac", type=float, default=0.2)
+    p.add_argument("--folds", type=int, default=3)
+    p.add_argument("--skip-cv", action="store_true")
+    return p.parse_args()
 
 
-def build_spark():
-    return (
-        SparkSession.builder
-        .appName("energy-forecast-model-comparison")
-        .enableHiveSupport()
-        .getOrCreate()
+def make_spark():
+    return (SparkSession.builder
+            .appName("DistributedEnergyStressModelComparison")
+            .enableHiveSupport().getOrCreate())
+
+
+def first_existing(columns, candidates):
+    lookup = {c.lower(): c for c in columns}
+    return next((lookup[x.lower()] for x in candidates
+                 if x.lower() in lookup), None)
+
+
+def parse_timestamp(df):
+    if "event_timestamp" in df.columns:
+        return df.withColumn("event_timestamp", F.to_timestamp("event_timestamp"))
+    name = first_existing(df.columns, [
+        "raw_timestamp", "timestamp", "datetime", "date_time"
+    ])
+    if name is None:
+        raise ValueError("No event_timestamp or raw_timestamp column found.")
+    raw = F.col(name).cast("string")
+    parsed = F.coalesce(
+        F.to_timestamp(raw),
+        F.to_timestamp(raw, "yyyy-MM-dd HH:mm:ss"),
+        F.to_timestamp(raw, "yyyy-MM-dd HH:mm"),
+        F.to_timestamp(raw, "yyyy-MM-dd'T'HH:mm:ss"),
+        F.to_timestamp(raw, "yyyy-MM-dd'T'HH:mm:ssXXX"),
+        F.to_timestamp(raw, "yyyy-MM-dd'T'HH:mm:ss.SSSXXX"),
+        F.to_timestamp(raw, "dd/MM/yyyy HH:mm:ss"),
+        F.to_timestamp(raw, "dd/MM/yyyy HH:mm"),
     )
-
-def load_data(spark, use_hive=True, hdfs_path="/big_data/distributed_energy/processed/clean_integrated"):
-    if use_hive:
-        df = spark.sql("SELECT * FROM energy_db.readings")
-    else:
-        schema_cols = [
-            "country", "raw_timestamp", "demand_mw", "solar_mw", "wind_onshore_mw",
-            "wind_offshore_mw", "temperature_c", "humidity_pct", "wind_speed_ms", "hour",
-            "renewable_generation_mw", "net_load_mw", "renewable_share", "grid_stress_indicator",
-        ]
-        df = spark.read.csv(hdfs_path, header=False, inferSchema=True).toDF(*schema_cols)
-    return df.withColumn("ts", F.to_timestamp("raw_timestamp", "yyyy-MM-dd HH:mm:ss"))
+    return df.withColumn("event_timestamp", parsed)
 
 
-def engineer_features(df):
-    df = df.withColumn("day_of_week", F.dayofweek("ts")) \
-           .withColumn("month", F.month("ts")) \
-           .withColumn("season", F.when(F.col("month").isin(12, 1, 2), "winter")
-                                   .when(F.col("month").isin(3, 4, 5), "spring")
-                                   .when(F.col("month").isin(6, 7, 8), "summer")
-                                   .otherwise("autumn"))
+def prepare_data(spark, target, test_frac):
+    table = f"{DATABASE}.{SOURCE_TABLE}"
+    print(f"Reading Hive table: {table}", flush=True)
+    df = spark.table(table)
+    print(f"Source columns: {df.columns}", flush=True)
+    if target not in df.columns:
+        raise ValueError(f"Target {target!r} not found in {table}. Columns: {df.columns}")
 
-    # Lag features, windowed PER COUNTRY, ordered by time. Partitioning by
-    # country is essential, without it a lag could pull in another
-    # country's demand value.
-    w = Window.partitionBy("country").orderBy("ts")
-    for col_name, steps in LAG_STEPS.items():
-        df = df.withColumn(col_name, F.lag("demand_mw", steps).over(w))
+    df = parse_timestamp(df).filter(F.col("event_timestamp").isNotNull())
+    print(f"Rows with parsed timestamps: {df.count()}", flush=True)
+    df = df.withColumn(target, F.col(target).cast("double"))
+    df = df.filter(F.col(target).isNotNull() & ~F.isnan(F.col(target)))
+
+    country_col = first_existing(df.columns, ["country", "country_name", "region"])
+    if country_col is None:
+        df = df.withColumn("country", F.lit("ALL"))
+    elif country_col != "country":
+        df = df.withColumnRenamed(country_col, "country")
+
+    excluded = {
+        target.lower(), "event_timestamp", "raw_timestamp", "timestamp",
+        "datetime", "date_time", "time", "country", "country_name",
+        "region", "id", "index", "grid_stress_indicator",
+    }
+    # In this dataset net_load_mw = demand_mw - renewable_generation_mw.
+    # Exclude current-time energy measurements that reveal that target.
+    if target.lower() == "net_load_mw":
+        excluded.update({
+            "demand_mw", "solar_mw", "wind_onshore_mw",
+            "wind_offshore_mw", "renewable_generation_mw", "renewable_share",
+        })
+
+    covariates = [
+        field.name for field in df.schema.fields
+        if field.name.lower() not in excluded
+        and isinstance(field.dataType, NumericType)
+    ]
+    for name in covariates:
+        val = F.col(name).cast("double")
+        df = df.withColumn(
+            name,
+            F.when(val.isNull() | F.isnan(val), F.lit(0.0)).otherwise(val)
+        )
+
+    # Derive calendar values from the parsed timestamp.
+    df = (df.withColumn("hour", F.hour("event_timestamp").cast("double"))
+          .withColumn("day_of_week",
+                      (F.dayofweek("event_timestamp") - 1).cast("double"))
+          .withColumn("month", F.month("event_timestamp").cast("double"))
+          .withColumn(
+              "season",
+              F.when(F.month("event_timestamp").isin(12, 1, 2), "winter")
+               .when(F.month("event_timestamp").isin(3, 4, 5), "spring")
+               .when(F.month("event_timestamp").isin(6, 7, 8), "summer")
+               .otherwise("autumn")))
+
+    # Assumes 15-minute observations: 4/hour, 96/day, 672/week.
+    w = Window.partitionBy("country").orderBy("event_timestamp")
+    df = (df.withColumn("previous_hour_demand", F.lag(F.col(target), 4).over(w))
+          .withColumn("previous_day_demand", F.lag(F.col(target), 96).over(w))
+          .withColumn("previous_week_demand", F.lag(F.col(target), 672).over(w)))
 
     before = df.count()
-    df = df.na.drop(subset=list(LAG_STEPS.keys()))
+    lag_cols = ["previous_hour_demand", "previous_day_demand", "previous_week_demand"]
+    df = df.dropna(subset=lag_cols)
     after = df.count()
-    print(f"Dropped {before - after} rows with no lag history yet (expected at the start of each country's series).")
-    return df
+    print(f"Rows removed for insufficient lag history: {before-after}", flush=True)
+    print(f"Rows available after feature preparation: {after}", flush=True)
+
+    features = ["hour", "day_of_week", "month"] + lag_cols
+    for name in covariates:
+        if name not in features and name != target:
+            features.append(name)
+    df = df.dropna(subset=["event_timestamp", "country", target, "season"] + features)
+    return df, target, features, test_frac
 
 
-def chronological_split(df, test_frac):
-    """Per-country chronological split: first (1-test_frac) of each
-    country's timeline is train, the rest is test. Never randomSplit here."""
-    w = Window.partitionBy("country").orderBy("ts")
-    df = df.withColumn("row_num", F.row_number().over(w))
-    counts = df.groupBy("country").agg(F.count("*").alias("n")).collect()
-    country_cutoffs = {row["country"]: int(row["n"] * (1 - test_frac)) for row in counts}
-
-    train_frames, test_frames = [], []
-    for country, cutoff in country_cutoffs.items():
-        country_df = df.filter(F.col("country") == country)
-        train_frames.append(country_df.filter(F.col("row_num") <= cutoff))
-        test_frames.append(country_df.filter(F.col("row_num") > cutoff))
-
-    train_df = train_frames[0]
-    for f in train_frames[1:]:
-        train_df = train_df.union(f)
-    test_df = test_frames[0]
-    for f in test_frames[1:]:
-        test_df = test_df.union(f)
-
-    return train_df.drop("row_num"), test_df.drop("row_num")
-
-
-def build_feature_pipeline(df, multi_country):
-    feature_cols = [
-        "hour", "day_of_week", "month",
-        "temperature_c", "humidity_pct", "wind_speed_ms",
-        "solar_mw", "wind_onshore_mw", "wind_offshore_mw",
-        "previous_hour_demand", "previous_day_demand", "previous_week_demand",
-    ]
-    stages = []
-
-    # One-hot encode season always; one-hot encode country only if this run
-    # actually has more than one country (pooled-model case).
-    season_indexer = StringIndexer(inputCol="season", outputCol="season_idx", handleInvalid="keep")
-    season_ohe = OneHotEncoder(inputCols=["season_idx"], outputCols=["season_vec"])
-    stages += [season_indexer, season_ohe]
-    feature_cols.append("season_vec")
-
-    if multi_country:
-        country_indexer = StringIndexer(inputCol="country", outputCol="country_idx", handleInvalid="keep")
-        country_ohe = OneHotEncoder(inputCols=["country_idx"], outputCols=["country_vec"])
-        stages += [country_indexer, country_ohe]
-        feature_cols.append("country_vec")
-
-    assembler = VectorAssembler(inputCols=feature_cols, outputCol="features", handleInvalid="skip")
-    stages.append(assembler)
-    return stages
-
-
-def get_model_and_grid(model_key, target_col):
-    if model_key == "linear":
-        model = LinearRegression(featuresCol="features", labelCol=target_col)
-        grid = (ParamGridBuilder()
-                .addGrid(model.regParam, [0.0, 0.01, 0.1, 1.0])
-                .addGrid(model.elasticNetParam, [0.0, 0.5, 1.0])
-                .build())
-    elif model_key == "dt":
-        model = DecisionTreeRegressor(featuresCol="features", labelCol=target_col)
-        grid = (ParamGridBuilder()
-                .addGrid(model.maxDepth, [5, 10, 15, 20])
-                .addGrid(model.maxBins, [32, 64])
-                .build())
-    elif model_key == "rf":
-        model = RandomForestRegressor(featuresCol="features", labelCol=target_col)
-        grid = (ParamGridBuilder()
-                .addGrid(model.numTrees, [20, 50, 100])
-                .addGrid(model.maxDepth, [5, 10, 15])
-                .build())
-    elif model_key == "gbt":
-        model = GBTRegressor(featuresCol="features", labelCol=target_col)
-        grid = (ParamGridBuilder()
-                .addGrid(model.maxIter, [20, 50, 100])
-                .addGrid(model.maxDepth, [3, 5, 8])
-                .addGrid(model.stepSize, [0.05, 0.1, 0.2])
-                .build())
+def model_and_grid(key, target):
+    if key == "linear":
+        model = LinearRegression(
+            featuresCol="features", labelCol=target, predictionCol="prediction",
+            maxIter=100, regParam=0.1, elasticNetParam=0.0, standardization=True)
+        grid = (ParamGridBuilder().addGrid(model.regParam, [0.01, 0.1, 1.0])
+                .addGrid(model.elasticNetParam, [0.0, 0.5, 1.0]).build())
+    elif key == "dt":
+        model = DecisionTreeRegressor(
+            featuresCol="features", labelCol=target, predictionCol="prediction",
+            maxBins=32)
+        grid = ParamGridBuilder().addGrid(model.maxDepth, [5, 10, 15]).build()
+    elif key == "rf":
+        model = RandomForestRegressor(
+            featuresCol="features", labelCol=target, predictionCol="prediction",
+            numTrees=10, maxDepth=5, maxBins=16, maxMemoryInMB=128,
+            subsamplingRate=0.8, featureSubsetStrategy="auto", seed=42)
+        grid = ParamGridBuilder().build()
+    elif key == "gbt":
+        model = GBTRegressor(
+            featuresCol="features", labelCol=target, predictionCol="prediction",
+            maxIter=30, maxDepth=3, stepSize=0.1, maxBins=32, seed=42)
+        grid = (ParamGridBuilder().addGrid(model.maxIter, [20, 30])
+                .addGrid(model.maxDepth, [3, 5]).build())
     else:
-        raise ValueError(f"Unknown model key: {model_key}")
+        raise ValueError(f"Unknown model: {key}")
     return model, grid
 
 
-def evaluate(predictions, target_col):
-    results = {}
-    for metric in ["mae", "rmse", "r2"]:
-        evaluator = RegressionEvaluator(labelCol=target_col, predictionCol="prediction", metricName=metric)
-        results[metric] = evaluator.evaluate(predictions)
-    # MAPE, manual since Spark's RegressionEvaluator doesn't provide it directly
-    mape_df = predictions.withColumn(
-        "ape", F.abs((F.col(target_col) - F.col("prediction")) / F.col(target_col))
-    )
-    results["mape"] = mape_df.agg(F.avg("ape")).first()[0] * 100
-    return results
+def make_pipeline(model, features):
+    indexer = StringIndexer(inputCol="season", outputCol="season_index",
+                            handleInvalid="keep")
+    encoder = OneHotEncoder(inputCols=["season_index"],
+                            outputCols=["season_vector"], handleInvalid="keep")
+    assembler = VectorAssembler(inputCols=features + ["season_vector"],
+                                outputCol="features", handleInvalid="skip")
+    return Pipeline(stages=[indexer, encoder, assembler, model])
+
+
+def calculate_metrics(preds, target):
+    def evaluate(metric):
+        return RegressionEvaluator(
+            labelCol=target, predictionCol="prediction",
+            metricName=metric).evaluate(preds)
+    mae, rmse, r2 = evaluate("mae"), evaluate("rmse"), evaluate("r2")
+    mape = preds.select(F.avg(F.when(
+        F.abs(F.col(target)) > 1e-9,
+        F.abs(F.col(target) - F.col("prediction")) / F.abs(F.col(target))
+    )).alias("mape")).first()["mape"]
+    return float(mae), float(rmse), float(r2), float(mape or 0.0) * 100.0
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--target", default="net_load_mw", choices=["net_load_mw", "demand_mw"])
-    parser.add_argument("--models", default="all", help="Comma-separated: linear,dt,rf,gbt or 'all'")
-    parser.add_argument("--test-frac", type=float, default=0.2)
-    parser.add_argument("--use-hive", action="store_true", default=True)
-    parser.add_argument("--output-dir", default=str(Path(__file__).resolve().parent.parent / "notebooks"),
-                         help="Where to save model_comparison.csv. Defaults to the project's "
-                              "notebooks/ folder, resolved relative to this script's own location "
-                              "so it lands in the right place regardless of the shell's cwd when "
-                              "spark-submit is called. Pass an absolute path to override.")
-    args = parser.parse_args()
+    args = parse_args()
+    if not 0.05 <= args.test_frac <= 0.5:
+        raise ValueError("--test-frac must be between 0.05 and 0.5")
+    if args.folds < 2:
+        raise ValueError("--folds must be at least 2")
+    requested = (["linear", "dt", "rf", "gbt"] if args.models.lower() == "all"
+                 else [x.strip().lower() for x in args.models.split(",") if x.strip()])
+    if not requested:
+        raise ValueError("No models selected.")
+    unknown = set(requested) - set(MODEL_NAMES)
+    if unknown:
+        raise ValueError(f"Unknown model(s): {sorted(unknown)}")
 
-    model_keys = list(MODEL_REGISTRY.keys()) if args.models == "all" else [m.strip() for m in args.models.split(",")]
+    spark = make_spark()
+    spark.sparkContext.setLogLevel("WARN")
+    prepared = None
+    results = []
+    try:
+        df, target, features, _ = prepare_data(spark, args.target, args.test_frac)
+        prepared = df.persist(StorageLevel.MEMORY_AND_DISK)
+        print(f"Materialized prepared rows: {prepared.count()}", flush=True)
+        countries = [r["country"] for r in prepared.select("country").distinct().collect()]
+        print(f"Countries to process: {countries}", flush=True)
+        print(f"Numeric features: {features}", flush=True)
 
-    spark = build_spark()
-    df = load_data(spark, use_hive=args.use_hive)
-    df = engineer_features(df)
+        for country in countries:
+            country_df = (prepared.filter(F.col("country") == country)
+                          .orderBy("event_timestamp")
+                          .persist(StorageLevel.MEMORY_AND_DISK))
+            count = country_df.count()
+            if count < 100:
+                print(f"Skipping {country}: only {count} usable rows.", flush=True)
+                country_df.unpersist()
+                continue
+            split = int(count * (1.0 - args.test_frac))
+            ordered = country_df.withColumn(
+                "__rn", F.row_number().over(Window.orderBy("event_timestamp")))
+            train = (ordered.filter(F.col("__rn") <= split).drop("__rn")
+                     .persist(StorageLevel.MEMORY_AND_DISK))
+            test = (ordered.filter(F.col("__rn") > split).drop("__rn")
+                    .persist(StorageLevel.MEMORY_AND_DISK))
+            ntrain, ntest = train.count(), test.count()
+            print(f"\nCountry={country}; rows={count}; train={ntrain}; test={ntest}",
+                  flush=True)
+            if not ntrain or not ntest:
+                train.unpersist(); test.unpersist(); country_df.unpersist()
+                continue
 
-    multi_country = df.select("country").distinct().count() > 1
-    print(f"Countries in this run: {[r['country'] for r in df.select('country').distinct().collect()]}")
-    print(f"Pooled model across countries: {multi_country}")
+            for key in requested:
+                print(f"\nTraining model: {key}", flush=True)
+                start = time.time()
+                model, grid = model_and_grid(key, target)
+                pipeline = make_pipeline(model, features)
+                if args.skip_cv or key == "rf":
+                    fitted = pipeline.fit(train)
+                else:
+                    evaluator = RegressionEvaluator(
+                        labelCol=target, predictionCol="prediction", metricName="rmse")
+                    cv = CrossValidator(
+                        estimator=pipeline, estimatorParamMaps=grid,
+                        evaluator=evaluator, numFolds=args.folds,
+                        parallelism=1, seed=42)
+                    fitted = cv.fit(train).bestModel
+                elapsed = time.time() - start
 
-    train_df, test_df = chronological_split(df, args.test_frac)
-    print(f"Train rows: {train_df.count()}, Test rows: {test_df.count()}")
+                preds = (fitted.transform(test)
+                         .select("country", "event_timestamp",
+                                 F.col(target).alias("actual"),
+                                 F.col("prediction").cast("double").alias("prediction"))
+                         .persist(StorageLevel.MEMORY_AND_DISK))
+                pred_count = preds.count()
+                if pred_count == 0:
+                    print(f"{key}: no test predictions; skipping.", flush=True)
+                    preds.unpersist()
+                    continue
+                metric_input = preds.withColumn(target, F.col("actual"))
+                mae, rmse, r2, mape = calculate_metrics(metric_input, target)
+                print(f"{key.upper()} | MAE={mae:.2f} | RMSE={rmse:.2f} | "
+                      f"R2={r2:.3f} | MAPE={mape:.2f}% | train_time={elapsed:.1f}s",
+                      flush=True)
+                results.append({
+                    "country": country, "model": MODEL_NAMES[key],
+                    "mae": mae, "rmse": rmse, "r2": r2, "mape": mape,
+                    "time": elapsed, "rows": pred_count,
+                })
+                preds.unpersist()
+                del fitted
+            train.unpersist(); test.unpersist(); country_df.unpersist()
 
-    feature_stages = build_feature_pipeline(df, multi_country)
-
-    comparison_rows = []
-    best_model_name, best_rmse, best_predictions = None, float("inf"), None
-
-    for model_key in model_keys:
-        model_name = MODEL_REGISTRY[model_key]
-        print(f"\n=== Training {model_name} ===")
-        model, grid = get_model_and_grid(model_key, args.target)
-        pipeline = Pipeline(stages=feature_stages + [model])
-        evaluator = RegressionEvaluator(labelCol=args.target, predictionCol="prediction", metricName="rmse")
-        cv = CrossValidator(estimator=pipeline, estimatorParamMaps=grid, evaluator=evaluator, numFolds=3, parallelism=2)
-
-        start = time.time()
-        cv_model = cv.fit(train_df)
-        train_time = time.time() - start
-
-        predictions = cv_model.transform(test_df)
-        metrics = evaluate(predictions, args.target)
-        best_params = cv_model.getEstimatorParamMaps()[cv_model.avgMetrics.index(min(cv_model.avgMetrics))]
-        best_params_str = ", ".join(f"{p.name}={v}" for p, v in best_params.items())
-
-        print(f"{model_name}: MAE={metrics['mae']:.2f}, RMSE={metrics['rmse']:.2f}, "
-              f"R2={metrics['r2']:.3f}, MAPE={metrics['mape']:.2f}%, train_time={train_time:.1f}s")
-        print(f"Best params: {best_params_str}")
-
-        comparison_rows.append({
-            "model": model_name,
-            "best_params": best_params_str,
-            "mae": metrics["mae"],
-            "rmse": metrics["rmse"],
-            "r2": metrics["r2"],
-            "mape_pct": metrics["mape"],
-            "train_time_sec": round(train_time, 1),
-        })
-
-        if metrics["rmse"] < best_rmse:
-            best_rmse = metrics["rmse"]
-            best_model_name = model_name
-            best_predictions = predictions
-
-    # ===== Comparison table =====
-    comparison_df = spark.createDataFrame(comparison_rows).orderBy("rmse")
-    print("\n=== Model comparison (sorted by RMSE, best first) ===")
-    comparison_df.show(truncate=False)
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / "model_comparison.csv"
-    comparison_df.toPandas().to_csv(output_path, index=False)
-    print(f"Saved {output_path}, this is the table for the report.")
-    print(f"\nBest model: {best_model_name} (RMSE={best_rmse:.2f})")
-
-    # ===== Write best model's predictions back to Hive =====
-    forecast_output = best_predictions.select(
-        "country", "raw_timestamp",
-        F.col(args.target).alias("actual"),
-        F.col("prediction").alias("predicted"),
-        F.lit(best_model_name).alias("model_name"),
-    )
-    forecast_output.write.mode("overwrite").saveAsTable("energy_db.forecast_results")
-    print("Wrote best model predictions to energy_db.forecast_results")
-
-    spark.stop()
+        if not results:
+            raise RuntimeError("No model produced results; check the data and logs.")
+        print("\nFinal model comparison (sorted by RMSE):", flush=True)
+        for r in sorted(results, key=lambda x: x["rmse"]):
+            print(f"{r['country']} | {r['model']} | MAE={r['mae']:.2f} | "
+                  f"RMSE={r['rmse']:.2f} | R2={r['r2']:.3f} | "
+                  f"MAPE={r['mape']:.2f}% | train_time={r['time']:.1f}s",
+                  flush=True)
+    finally:
+        if prepared is not None:
+            prepared.unpersist()
+        spark.stop()
 
 
 if __name__ == "__main__":
