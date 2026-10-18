@@ -196,7 +196,7 @@ def fetch_one_country(country, months, token):
     merged = merged.sort_values("timestamp").reset_index(drop=True)
     merged.insert(0, "country", country)
 
-    out_path = PROCESSED_DIR / f"entsoe_{country}_{start.date()}_{end.date()}.csv"
+    out_path = PROCESSED_DIR / f"entsoe_{country}.csv"
     merged.to_csv(out_path, index=False)
     print(f"Saved {len(merged)} rows to {out_path}")
 

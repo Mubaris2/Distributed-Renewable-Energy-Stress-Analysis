@@ -1,15 +1,31 @@
-.env
+# Python virtual environments
+.venv/
+venv/
+env/
 
-data/raw/*
-data/processed/*
-!data/raw/.gitkeep
-!data/processed/.gitkeep
-
+# Python cache
 __pycache__/
-*.pyc
+*.py[cod]
+
+# Credentials and environment variables
+.env
+.env.*
+!.env.example
+
+# IDE and operating system files
+.vscode/
+.idea/
+.DS_Store
+
+# Logs
 *.log
 
-metastore_db
+# Generated model files
+*.model
+*.pkl
+*.joblib
 
-.venv
-venv
+# Temporary Spark output
+spark-warehouse/
+metastore_db/
+derby.log

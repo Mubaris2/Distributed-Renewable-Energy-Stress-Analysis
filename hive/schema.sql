@@ -25,7 +25,7 @@ CREATE EXTERNAL TABLE IF NOT EXISTS readings (
 ROW FORMAT DELIMITED
 FIELDS TERMINATED BY ','
 STORED AS TEXTFILE
-LOCATION '/big_data/distributed_energy/processed/nl_clean_integrated';
+LOCATION '/big_data/distributed_energy/processed/clean_integrated';
 
 CREATE EXTERNAL TABLE IF NOT EXISTS flagged_solar_gaps (
     country           STRING,

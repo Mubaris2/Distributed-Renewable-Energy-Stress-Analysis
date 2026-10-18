@@ -102,13 +102,21 @@ def prepare_data(spark, target, test_frac):
         "datetime", "date_time", "time", "country", "country_name",
         "region", "id", "index", "grid_stress_indicator",
     }
-    # In this dataset net_load_mw = demand_mw - renewable_generation_mw.
-    # Exclude current-time energy measurements that reveal that target.
-    if target.lower() == "net_load_mw":
-        excluded.update({
-            "demand_mw", "solar_mw", "wind_onshore_mw",
-            "wind_offshore_mw", "renewable_generation_mw", "renewable_share",
-        })
+    # Contemporaneous energy measurements can reveal the prediction target.
+    # Dataset identity: net_load_mw = demand_mw - renewable_generation_mw.
+    # Exclude these current-time measurements for both demand and net-load
+    # forecasting; retain weather, calendar, and historical target lags.
+    energy_features = {
+        "demand_mw",
+        "solar_mw",
+        "wind_onshore_mw",
+        "wind_offshore_mw",
+        "renewable_generation_mw",
+        "net_load_mw",
+        "renewable_share",
+    }
+    if target.lower() in {"demand_mw", "net_load_mw"}:
+        excluded.update(energy_features)
 
     covariates = [
         field.name for field in df.schema.fields

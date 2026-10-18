@@ -69,7 +69,7 @@ def interpolate_to_energy_grid(weather_df, energy_timestamps):
 def find_latest_energy_csv(country):
     """Auto-discover the most recently fetched entsoe_<COUNTRY>_*.csv for this
     country, so adding countries doesn't mean manually tracking file paths."""
-    matches = sorted(PROCESSED_DIR.glob(f"entsoe_{country}_*.csv"))
+    matches = sorted(PROCESSED_DIR.glob(f"entsoe_{country}.csv"))
     # excludes files already named entsoe_weather_... since the glob is anchored
     # to "entsoe_<country>_", not "entsoe_weather_"
     if not matches:
@@ -102,7 +102,7 @@ def process_one_country(country, energy_path_override=None):
     if "country" not in merged.columns:
         merged.insert(0, "country", country)
 
-    out_path = PROCESSED_DIR / f"entsoe_weather_{country}_{start_date}_{end_date}.csv"
+    out_path = PROCESSED_DIR / f"entsoe_weather_{country}.csv"
     merged.to_csv(out_path, index=False)
     print(f"Saved {len(merged)} rows to {out_path}")
 

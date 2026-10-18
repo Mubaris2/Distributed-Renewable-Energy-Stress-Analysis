@@ -1,0 +1,118 @@
+26/10/18 20:12:39 WARN Utils: Your hostname, muntasir-Dell-G15-5520 resolves to a loopback address: 127.0.1.1; using 172.16.39.22 instead (on interface wlp0s20f3)
+26/10/18 20:12:39 WARN Utils: Set SPARK_LOCAL_IP if you need to bind to another address
+26/10/18 20:12:41 INFO SparkContext: Running Spark version 3.5.9
+26/10/18 20:12:41 INFO SparkContext: OS info Linux, 7.0.0-34-generic, amd64
+26/10/18 20:12:41 INFO SparkContext: Java version 1.8.0_504
+26/10/18 20:12:41 WARN NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+26/10/18 20:12:41 INFO ResourceUtils: ==============================================================
+26/10/18 20:12:41 INFO ResourceUtils: No custom resources configured for spark.driver.
+26/10/18 20:12:41 INFO ResourceUtils: ==============================================================
+26/10/18 20:12:41 INFO SparkContext: Submitted application: DistributedEnergyStressModelComparison
+26/10/18 20:12:41 INFO ResourceProfile: Default ResourceProfile created, executor resources: Map(cores -> name: cores, amount: 1, script: , vendor: , memory -> name: memory, amount: 1024, script: , vendor: , offHeap -> name: offHeap, amount: 0, script: , vendor: ), task resources: Map(cpus -> name: cpus, amount: 1.0)
+26/10/18 20:12:41 INFO ResourceProfile: Limiting resource is cpu
+26/10/18 20:12:41 INFO ResourceProfileManager: Added ResourceProfile id: 0
+26/10/18 20:12:41 INFO SecurityManager: Changing view acls to: muntasir
+26/10/18 20:12:41 INFO SecurityManager: Changing modify acls to: muntasir
+26/10/18 20:12:41 INFO SecurityManager: Changing view acls groups to: 
+26/10/18 20:12:41 INFO SecurityManager: Changing modify acls groups to: 
+26/10/18 20:12:41 INFO SecurityManager: SecurityManager: authentication disabled; ui acls disabled; users with view permissions: muntasir; groups with view permissions: EMPTY; users with modify permissions: muntasir; groups with modify permissions: EMPTY
+26/10/18 20:12:41 INFO Utils: Successfully started service 'sparkDriver' on port 36481.
+26/10/18 20:12:41 INFO SparkEnv: Registering MapOutputTracker
+26/10/18 20:12:41 INFO SparkEnv: Registering BlockManagerMaster
+26/10/18 20:12:41 INFO BlockManagerMasterEndpoint: Using org.apache.spark.storage.DefaultTopologyMapper for getting topology information
+26/10/18 20:12:41 INFO BlockManagerMasterEndpoint: BlockManagerMasterEndpoint up
+26/10/18 20:12:42 INFO SparkEnv: Registering BlockManagerMasterHeartbeat
+26/10/18 20:12:42 INFO DiskBlockManager: Created local directory at /tmp/blockmgr-138f1f32-8f55-4f1e-8896-49221f99097b
+26/10/18 20:12:42 INFO MemoryStore: MemoryStore started with capacity 366.3 MiB
+26/10/18 20:12:42 INFO SparkEnv: Registering OutputCommitCoordinator
+26/10/18 20:12:42 INFO JettyUtils: Start Jetty 0.0.0.0:4040 for SparkUI
+26/10/18 20:12:42 INFO Utils: Successfully started service 'SparkUI' on port 4040.
+26/10/18 20:12:42 INFO Executor: Starting executor ID driver on host 172.16.39.22
+26/10/18 20:12:42 INFO Executor: OS info Linux, 7.0.0-34-generic, amd64
+26/10/18 20:12:42 INFO Executor: Java version 1.8.0_504
+26/10/18 20:12:42 INFO Executor: Starting executor with user classpath (userClassPathFirst = false): ''
+26/10/18 20:12:42 INFO Executor: Created or updated repl class loader org.apache.spark.util.MutableURLClassLoader@4fdce8da for default.
+26/10/18 20:12:42 INFO Utils: Successfully started service 'org.apache.spark.network.netty.NettyBlockTransferService' on port 34895.
+26/10/18 20:12:42 INFO NettyBlockTransferService: Server created on 172.16.39.22:34895
+26/10/18 20:12:42 INFO BlockManager: Using org.apache.spark.storage.RandomBlockReplicationPolicy for block replication policy
+26/10/18 20:12:42 INFO BlockManagerMaster: Registering BlockManager BlockManagerId(driver, 172.16.39.22, 34895, None)
+26/10/18 20:12:42 INFO BlockManagerMasterEndpoint: Registering block manager 172.16.39.22:34895 with 366.3 MiB RAM, BlockManagerId(driver, 172.16.39.22, 34895, None)
+26/10/18 20:12:42 INFO BlockManagerMaster: Registered BlockManager BlockManagerId(driver, 172.16.39.22, 34895, None)
+26/10/18 20:12:42 INFO BlockManager: Initialized BlockManager: BlockManagerId(driver, 172.16.39.22, 34895, None)
+Reading Hive table: energy_db.readings
+26/10/18 20:12:44 WARN HiveConf: HiveConf of name hive.metastore.event.db.notification.api.auth does not exist
+Source columns: ['country', 'raw_timestamp', 'demand_mw', 'solar_mw', 'wind_onshore_mw', 'wind_offshore_mw', 'temperature_c', 'humidity_pct', 'wind_speed_ms', 'hour', 'renewable_generation_mw', 'net_load_mw', 'renewable_share', 'grid_stress_indicator']
+26/10/18 20:12:46 WARN SessionState: METASTORE_FILTER_HOOK will be ignored, since hive.security.authorization.manager is set to instance of HiveAuthorizerFactory.
+Rows with parsed timestamps: 16443
+Rows removed for insufficient lag history: 1344
+Rows available after feature preparation: 15092
+Materialized prepared rows: 15092
+Countries to process: ['NL', 'FR']
+Numeric features: ['hour', 'day_of_week', 'month', 'previous_hour_demand', 'previous_day_demand', 'previous_week_demand', 'temperature_c', 'humidity_pct', 'wind_speed_ms']
+26/10/18 20:12:54 WARN WindowExec: No Partition Defined for Window operation! Moving all data to a single partition, this can cause serious performance degradation.
+26/10/18 20:12:54 WARN WindowExec: No Partition Defined for Window operation! Moving all data to a single partition, this can cause serious performance degradation.
+26/10/18 20:12:54 WARN WindowExec: No Partition Defined for Window operation! Moving all data to a single partition, this can cause serious performance degradation.
+26/10/18 20:12:54 WARN WindowExec: No Partition Defined for Window operation! Moving all data to a single partition, this can cause serious performance degradation.
+26/10/18 20:12:54 WARN WindowExec: No Partition Defined for Window operation! Moving all data to a single partition, this can cause serious performance degradation.
+26/10/18 20:12:54 WARN WindowExec: No Partition Defined for Window operation! Moving all data to a single partition, this can cause serious performance degradation.
+26/10/18 20:12:54 WARN WindowExec: No Partition Defined for Window operation! Moving all data to a single partition, this can cause serious performance degradation.
+26/10/18 20:12:54 WARN WindowExec: No Partition Defined for Window operation! Moving all data to a single partition, this can cause serious performance degradation.
+26/10/18 20:12:55 WARN WindowExec: No Partition Defined for Window operation! Moving all data to a single partition, this can cause serious performance degradation.
+26/10/18 20:12:55 WARN WindowExec: No Partition Defined for Window operation! Moving all data to a single partition, this can cause serious performance degradation.
+26/10/18 20:12:55 WARN WindowExec: No Partition Defined for Window operation! Moving all data to a single partition, this can cause serious performance degradation.
+26/10/18 20:12:55 WARN WindowExec: No Partition Defined for Window operation! Moving all data to a single partition, this can cause serious performance degradation.
+26/10/18 20:12:55 WARN WindowExec: No Partition Defined for Window operation! Moving all data to a single partition, this can cause serious performance degradation.
+26/10/18 20:12:55 WARN WindowExec: No Partition Defined for Window operation! Moving all data to a single partition, this can cause serious performance degradation.
+
+Country=NL; rows=7633; train=6106; test=1527
+
+Training model: linear
+LINEAR | MAE=705.18 | RMSE=980.26 | R2=0.769 | MAPE=9.09% | train_time=31.3s
+
+Training model: dt
+DT | MAE=697.75 | RMSE=1001.44 | R2=0.758 | MAPE=9.33% | train_time=20.3s
+
+Training model: rf
+RF | MAE=965.64 | RMSE=1371.43 | R2=0.547 | MAPE=14.82% | train_time=1.1s
+
+Training model: gbt
+GBT | MAE=626.90 | RMSE=882.70 | R2=0.812 | MAPE=8.56% | train_time=102.7s
+26/10/18 20:15:35 WARN WindowExec: No Partition Defined for Window operation! Moving all data to a single partition, this can cause serious performance degradation.
+26/10/18 20:15:35 WARN WindowExec: No Partition Defined for Window operation! Moving all data to a single partition, this can cause serious performance degradation.
+26/10/18 20:15:35 WARN WindowExec: No Partition Defined for Window operation! Moving all data to a single partition, this can cause serious performance degradation.
+26/10/18 20:15:35 WARN WindowExec: No Partition Defined for Window operation! Moving all data to a single partition, this can cause serious performance degradation.
+26/10/18 20:15:35 WARN WindowExec: No Partition Defined for Window operation! Moving all data to a single partition, this can cause serious performance degradation.
+26/10/18 20:15:35 WARN WindowExec: No Partition Defined for Window operation! Moving all data to a single partition, this can cause serious performance degradation.
+26/10/18 20:15:35 WARN WindowExec: No Partition Defined for Window operation! Moving all data to a single partition, this can cause serious performance degradation.
+26/10/18 20:15:35 WARN WindowExec: No Partition Defined for Window operation! Moving all data to a single partition, this can cause serious performance degradation.
+26/10/18 20:15:35 WARN WindowExec: No Partition Defined for Window operation! Moving all data to a single partition, this can cause serious performance degradation.
+26/10/18 20:15:35 WARN WindowExec: No Partition Defined for Window operation! Moving all data to a single partition, this can cause serious performance degradation.
+26/10/18 20:15:35 WARN WindowExec: No Partition Defined for Window operation! Moving all data to a single partition, this can cause serious performance degradation.
+26/10/18 20:15:35 WARN WindowExec: No Partition Defined for Window operation! Moving all data to a single partition, this can cause serious performance degradation.
+26/10/18 20:15:36 WARN WindowExec: No Partition Defined for Window operation! Moving all data to a single partition, this can cause serious performance degradation.
+26/10/18 20:15:36 WARN WindowExec: No Partition Defined for Window operation! Moving all data to a single partition, this can cause serious performance degradation.
+
+Country=FR; rows=7459; train=5967; test=1492
+
+Training model: linear
+LINEAR | MAE=2141.70 | RMSE=2789.46 | R2=0.775 | MAPE=6.13% | train_time=24.0s
+
+Training model: dt
+26/10/18 20:16:19 WARN DAGScheduler: Broadcasting large task binary with size 1162.8 KiB
+DT | MAE=1547.76 | RMSE=2063.17 | R2=0.877 | MAPE=4.66% | train_time=18.6s
+
+Training model: rf
+RF | MAE=2147.93 | RMSE=2818.87 | R2=0.770 | MAPE=6.20% | train_time=1.2s
+
+Training model: gbt
+GBT | MAE=1270.71 | RMSE=1696.83 | R2=0.917 | MAPE=3.74% | train_time=102.3s
+
+Final model comparison (sorted by RMSE):
+NL | Gradient-Boosted Trees | MAE=626.90 | RMSE=882.70 | R2=0.812 | MAPE=8.56% | train_time=102.7s
+NL | Linear Regression | MAE=705.18 | RMSE=980.26 | R2=0.769 | MAPE=9.09% | train_time=31.3s
+NL | Decision Tree | MAE=697.75 | RMSE=1001.44 | R2=0.758 | MAPE=9.33% | train_time=20.3s
+NL | Random Forest | MAE=965.64 | RMSE=1371.43 | R2=0.547 | MAPE=14.82% | train_time=1.1s
+FR | Gradient-Boosted Trees | MAE=1270.71 | RMSE=1696.83 | R2=0.917 | MAPE=3.74% | train_time=102.3s
+FR | Decision Tree | MAE=1547.76 | RMSE=2063.17 | R2=0.877 | MAPE=4.66% | train_time=18.6s
+FR | Linear Regression | MAE=2141.70 | RMSE=2789.46 | R2=0.775 | MAPE=6.13% | train_time=24.0s
+FR | Random Forest | MAE=2147.93 | RMSE=2818.87 | R2=0.770 | MAPE=6.20% | train_time=1.2s
